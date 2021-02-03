@@ -14,8 +14,11 @@ func TestMap(t *testing.T) {
 	var m syncmap.Map
 	keys := strings.Fields("a b c d e f g h i j k l m n o p q r s t u v w x y z")
 	ch := make(chan error, len(keys))
+	start := make(chan bool)
+	stop := make(chan bool)
 	for _, k := range keys {
 		go func(k string) {
+			<-start
 			p, ok := m.Load(k)
 			if ok {
 				ch <- fmt.Errorf("unexpected successful initial load of key %q", k)
@@ -37,6 +40,18 @@ func TestMap(t *testing.T) {
 			ch <- nil
 		}(k)
 	}
+	go func() {
+		<-start
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.Load("nonexistent key to trigger frequent dirty map promotions")
+			}
+		}
+	}()
+	close(start)
 	for i := 0; i < len(keys); i++ {
 		err := <-ch
 		if err != nil {
@@ -44,6 +59,29 @@ func TestMap(t *testing.T) {
 			i-- // don't count errors, only nils
 		}
 	}
+	close(stop)
+}
+
+func TestStoreOnly(t *testing.T) {
+	var m syncmap.Map
+	var wg sync.WaitGroup
+	ch := make(chan bool)
+	n := runtime.GOMAXPROCS(0)
+	wg.Add(n)
+	f := func(v int) {
+		k := string(rune(v + '0'))
+		<-ch
+		for i := 0; i < 1e5; i++ {
+			m.Store(k, v)
+		}
+		wg.Done()
+	}
+	for i := 0; i < n; i++ {
+		go f(i)
+	}
+	close(ch)
+	wg.Wait()
+	// No correct result, except that the race detector shouldn't complain.
 }
 
 func TestMapKey(t *testing.T) {
