@@ -57,6 +57,32 @@ func (m *Map) Load(k string) (v interface{}, ok bool) {
 	return e.load(), ok
 }
 
+// LoadOrStore gets the value at a key if it exists or stores and returns v if
+// it does not. loaded is true if the value already existed.
+func (m *Map) LoadOrStore(k string, v interface{}) (r interface{}, loaded bool) {
+	mv, _ := m.v.Load().(map[string]*entry)
+	e, ok := mv[k]
+	if ok {
+		return e.load(), true
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Reload e in case another goroutine set it while we were locking.
+	mv, _ = m.v.Load().(map[string]*entry)
+	e, ok = mv[k]
+	if ok {
+		return e.load(), true
+	}
+	e, ok = m.dirty[k]
+	// Whether we load or store, this is a miss.
+	m.miss()
+	if ok {
+		return e.load(), true
+	}
+	m.dirty[k] = newEntry(v)
+	return v, false
+}
+
 // miss updates the miss counter and possibly promotes the dirty map. The
 // caller must hold m.mu.
 func (m *Map) miss() {

@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/zephyrtronium/syncmap"
@@ -107,4 +108,42 @@ func TestMapKey(t *testing.T) {
 	close(ch)
 	wg.Wait()
 	// No correct result, except that the race detector shouldn't complain.
+}
+
+func TestLoadOrStore(t *testing.T) {
+	var m syncmap.Map
+	n := runtime.GOMAXPROCS(0)
+	ch := make(chan bool)
+	errs := make(chan error, n)
+	var stores int32
+	stored := int32(-1)
+	f := func(v int32) {
+		<-ch
+		for i := 0; i < 1e5; i++ {
+			r, ok := m.LoadOrStore("key", v)
+			if ok {
+				if s := atomic.LoadInt32(&stored); r != s {
+					errs <- fmt.Errorf("loaded wrong value: want %d, got %#v", s, r)
+				}
+				continue
+			}
+			if r != v {
+				errs <- fmt.Errorf("stored wrong value: want %d, got %#v", v, r)
+			}
+			atomic.AddInt32(&stores, 1)
+			atomic.CompareAndSwapInt32(&stored, -1, v)
+		}
+		errs <- nil
+	}
+	for i := 0; i < n; i++ {
+		go f(int32(i))
+	}
+	close(ch)
+	for i := 0; i < n; i++ {
+		err := <-errs
+		if err != nil {
+			t.Error(err)
+			i-- // don't count errors, only nils
+		}
+	}
 }
