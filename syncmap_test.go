@@ -147,3 +147,56 @@ func TestLoadOrStore(t *testing.T) {
 		}
 	}
 }
+
+func TestDelete(t *testing.T) {
+	// Test that deleting with a nil m.v doesn't panic.
+	t.Run("empty", func(t *testing.T) {
+		var m syncmap.Map
+		m.Delete("")
+	})
+	// Test that storing and deleting a value removes it.
+	t.Run("semantic", func(t *testing.T) {
+		var m syncmap.Map
+		m.Store("k", 0)
+		m.Delete("k")
+		v, ok := m.Load("k")
+		if ok {
+			t.Errorf("deleted key k=0 was loaded, returning %v", v)
+		}
+		if v != nil {
+			t.Errorf("deleted key k=0 returned non-nil value %v", v)
+		}
+	})
+	// Test that concurrent reads to a value eventually see a delete.
+	t.Run("concurrent", func(t *testing.T) {
+		var m syncmap.Map
+		start := make(chan bool)
+		read := make(chan bool)
+		errs := make(chan error, 1)
+		m.Store("k", 0)
+		go func() {
+			<-start // receive start signal
+			_, ok := m.Load("k")
+			close(read) // signal that we've read
+			if !ok {
+				errs <- fmt.Errorf("initial load failed")
+				return
+			}
+			for i := 0; i < 1e7; i++ {
+				_, ok = m.Load("k")
+				if !ok {
+					errs <- nil
+					return
+				}
+				runtime.Gosched()
+			}
+			errs <- fmt.Errorf("too many iterations without seeing delete")
+		}()
+		close(start) // send start signal
+		<-read       // receive read signal
+		m.Delete("k")
+		if err := <-errs; err != nil {
+			t.Error(err)
+		}
+	})
+}
