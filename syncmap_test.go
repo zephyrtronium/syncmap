@@ -200,3 +200,115 @@ func TestDelete(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadAndDelete(t *testing.T) {
+	// Test that deleting with a nil m.v returns nil.
+	t.Run("empty", func(t *testing.T) {
+		var m syncmap.Map
+		r, ok := m.LoadAndDelete("")
+		if ok {
+			t.Errorf("empty map loaded %#v", r)
+		}
+		if r != nil {
+			t.Errorf("empty map returned %#v on delete", r)
+		}
+	})
+	// Test that storing and deleting a value removes it.
+	t.Run("semantic", func(t *testing.T) {
+		var m syncmap.Map
+		m.Store("k", 0)
+		v, ok := m.LoadAndDelete("k")
+		if !ok {
+			t.Errorf("delete indicated no value")
+		}
+		if v != 0 {
+			t.Errorf("delete returned wrong value: want 0/true, got %v/%t", v, ok)
+		}
+		v, ok = m.Load("k")
+		if ok {
+			t.Errorf("deleted key k=0 was loaded, returning %v", v)
+		}
+		if v != nil {
+			t.Errorf("deleted key k=0 returned non-nil value %v", v)
+		}
+	})
+	// Test that concurrent reads to a value eventually see a delete.
+	t.Run("concurrent", func(t *testing.T) {
+		var m syncmap.Map
+		start := make(chan bool)
+		read := make(chan bool)
+		errs := make(chan error, 1)
+		m.Store("k", 0)
+		go func() {
+			<-start // receive start signal
+			_, ok := m.Load("k")
+			close(read) // signal that we've read
+			if !ok {
+				errs <- fmt.Errorf("initial load failed")
+				return
+			}
+			for i := 0; i < 1e7; i++ {
+				_, ok = m.Load("k")
+				if !ok {
+					errs <- nil
+					return
+				}
+				runtime.Gosched()
+			}
+			errs <- fmt.Errorf("too many iterations without seeing delete")
+		}()
+		close(start) // send start signal
+		<-read       // receive read signal
+		r, ok := m.LoadAndDelete("k")
+		if !ok {
+			t.Errorf("concurrent delete failed")
+		}
+		if r != 0 {
+			t.Errorf("concurrent delete gave wrong result: want 0, got %v", r)
+		}
+		if err := <-errs; err != nil {
+			t.Error(err)
+		}
+	})
+	// Test that concurrent stores and deletes see each other.
+	t.Run("write", func(t *testing.T) {
+		var m syncmap.Map
+		m.Store("k", 0)
+		start := make(chan bool)
+		errs := make(chan error, 1)
+		n := runtime.GOMAXPROCS(0)
+		f := func() {
+			defer func() { errs <- nil }()
+			seen := -1
+			<-start
+			for i := 0; i < 1e7; i++ {
+				r, ok := m.LoadAndDelete("k")
+				if !ok {
+					continue
+				}
+				x := r.(int)
+				if x == seen {
+					m.Store("k", x)
+					runtime.Gosched()
+					continue
+				}
+				seen = x + 1
+				m.Store("k", seen)
+				if x >= 1e3 {
+					return
+				}
+			}
+			errs <- fmt.Errorf("too many iterations")
+		}
+		for i := 0; i < n; i++ {
+			go f()
+		}
+		close(start)
+		for i := 0; i < n; i++ {
+			if err := <-errs; err != nil {
+				t.Error(err)
+				i-- // only count nils
+			}
+		}
+	})
+}

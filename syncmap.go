@@ -85,11 +85,19 @@ func (m *Map) LoadOrStore(k string, v interface{}) (r interface{}, loaded bool) 
 
 // Delete deletes the value at a key.
 func (m *Map) Delete(k string) {
+	m.LoadAndDelete(k)
+}
+
+// LoadAndDelete deletes the value at a key, returning its old value and
+// whether it existed.
+func (m *Map) LoadAndDelete(k string) (interface{}, bool) {
 	mv, _ := m.v.Load().(map[string]*entry)
 	e := mv[k]
 	if e != nil {
-		e.delete()
-		return
+		if p := e.delete(); p != nil {
+			return *p, true
+		}
+		return nil, false
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -97,11 +105,19 @@ func (m *Map) Delete(k string) {
 	mv, _ = m.v.Load().(map[string]*entry)
 	e = mv[k]
 	if e != nil {
-		e.delete()
-		return
+		if p := e.delete(); p != nil {
+			return *p, true
+		}
+		return nil, false
 	}
-	delete(m.dirty, k)
+	e = m.dirty[k]
 	m.miss()
+	if e != nil {
+		if p := e.delete(); p != nil {
+			return *p, true
+		}
+	}
+	return nil, false
 }
 
 // miss updates the miss counter and possibly promotes the dirty map. The
@@ -146,6 +162,6 @@ func (e *entry) store(v interface{}) {
 	atomic.StorePointer(&e.p, unsafe.Pointer(&v))
 }
 
-func (e *entry) delete() {
-	atomic.StorePointer(&e.p, nil)
+func (e *entry) delete() (old *interface{}) {
+	return (*interface{})(atomic.SwapPointer(&e.p, nil))
 }
