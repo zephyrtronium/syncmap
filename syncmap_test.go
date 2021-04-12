@@ -312,3 +312,83 @@ func TestLoadAndDelete(t *testing.T) {
 		}
 	})
 }
+
+func TestRange(t *testing.T) {
+	t.Run("all", func(t *testing.T) {
+		var m syncmap.Map
+		keys := strings.Fields("a b c d e f g h i j k l m n o p q r s t u v w x y z")
+		for _, k := range keys {
+			m.Store(k, k)
+		}
+		seen := make(map[string]bool, len(keys))
+		for i := 0; i < 1000; i++ {
+			m.Range(func(key string, value interface{}) bool {
+				if seen[key] {
+					t.Errorf("saw key %v again", key)
+				}
+				seen[key] = true
+				return true
+			})
+			if len(seen) != len(keys) {
+				t.Errorf("wrong keys: want %v, got %v", keys, seen)
+			}
+			for k := range seen {
+				delete(seen, k)
+			}
+		}
+	})
+	t.Run("happens-before", func(t *testing.T) {
+		var m syncmap.Map
+		for i := 1; i <= 100; i++ {
+			m.Store(string(rune(i)), i)
+			sum := 0
+			m.Range(func(key string, value interface{}) bool {
+				sum += value.(int)
+				return true
+			})
+			if sum != i*(i+1)/2 {
+				t.Errorf("wrong values: sum should be %d, got %d", i*(i+1)/2, sum)
+			}
+		}
+	})
+	t.Run("stop", func(t *testing.T) {
+		var m syncmap.Map
+		keys := strings.Fields("a b c d e f g h i j k l m n o p q r s t u v w x y z")
+		for _, k := range keys {
+			m.Store(k, k)
+		}
+		seen := make([]string, 0, 1)
+		m.Range(func(key string, value interface{}) bool {
+			seen = append(seen, key)
+			return false
+		})
+		if len(seen) != 1 {
+			t.Errorf("wrong number of iters: want 1, got %d (%v)", len(seen), seen)
+		}
+	})
+	t.Run("loop-use", func(t *testing.T) {
+		var m syncmap.Map
+		keys := strings.Fields("a b c d e f g h i j k l m n o p q r s t u v w x y z")
+		for _, k := range keys {
+			m.Store(k, k)
+		}
+		seen := make(map[string]bool, len(keys))
+		m.Range(func(key string, value interface{}) bool {
+			m.Load("") // should not deadlock
+			m.Range(func(key string, value interface{}) bool {
+				if seen[key] {
+					t.Errorf("saw key %v again", key)
+				}
+				seen[key] = true
+				return true
+			})
+			if len(seen) != len(keys) {
+				t.Errorf("wrong keys: want %v, got %v", keys, seen)
+			}
+			for k := range seen {
+				delete(seen, k)
+			}
+			return true
+		})
+	})
+}

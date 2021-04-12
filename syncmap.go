@@ -120,6 +120,26 @@ func (m *Map) LoadAndDelete(k string) (interface{}, bool) {
 	return nil, false
 }
 
+// Range calls f for each key and its corresponding value in the map. If f
+// returns false, the iteration ceases. Note that Range is O(n) even if f
+// returns false after a constant number of calls.
+func (m *Map) Range(f func(key string, value interface{}) bool) {
+	m.mu.Lock()
+	// Force miss to promote.
+	m.misses = len(m.dirty) - 1
+	m.miss()
+	mv, _ := m.v.Load().(map[string]*entry)
+	m.mu.Unlock()
+
+	for k, v := range mv {
+		if r, ok := v.load(); ok {
+			if !f(k, r) {
+				return
+			}
+		}
+	}
+}
+
 // miss updates the miss counter and possibly promotes the dirty map. The
 // caller must hold m.mu.
 func (m *Map) miss() {
