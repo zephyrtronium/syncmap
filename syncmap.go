@@ -4,7 +4,6 @@ package syncmap
 import (
 	"sync"
 	"sync/atomic"
-	"unsafe"
 )
 
 // Map is a concurrent read-mostly map, much like sync.Map with string keys.
@@ -21,20 +20,24 @@ type Map struct {
 func (m *Map) Store(k string, v interface{}) {
 	mv, _ := m.v.Load().(map[string]*entry)
 	e := mv[k]
+	if e != nil {
+		e.store(v)
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Reload e in case another goroutine set it while we were locking.
+	mv, _ = m.v.Load().(map[string]*entry)
+	e = mv[k]
+	if e != nil {
+		e.store(v)
+		return
+	}
+	e = m.dirty[k]
 	if e == nil {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		// Reload e in case another goroutine set it while we were locking.
-		mv, _ = m.v.Load().(map[string]*entry)
-		e = mv[k]
-		if e == nil {
-			e = m.dirty[k]
-			if e == nil {
-				m.miss() // Ensures m.dirty is non-nil.
-				m.dirty[k] = newEntry(v)
-				return
-			}
-		}
+		m.miss() // Ensures m.dirty is non-nil.
+		m.dirty[k] = newEntry(v)
+		return
 	}
 	e.store(v)
 }
@@ -43,16 +46,17 @@ func (m *Map) Store(k string, v interface{}) {
 func (m *Map) Load(k string) (v interface{}, ok bool) {
 	mv, _ := m.v.Load().(map[string]*entry)
 	e, ok := mv[k]
+	if ok {
+		return e.load()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Reload e in case another goroutine set it while we were locking.
+	mv, _ = m.v.Load().(map[string]*entry)
+	e, ok = mv[k]
 	if !ok {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		// Reload e in case another goroutine set it while we were locking.
-		mv, _ = m.v.Load().(map[string]*entry)
-		e, ok = mv[k]
-		if !ok {
-			e, ok = m.dirty[k]
-			m.miss()
-		}
+		e, ok = m.dirty[k]
+		m.miss()
 	}
 	return e.load()
 }
@@ -156,32 +160,4 @@ func (m *Map) miss() {
 		}
 	}
 	m.misses = 0
-}
-
-type entry struct {
-	p unsafe.Pointer // *interface{}
-}
-
-func newEntry(v interface{}) *entry {
-	return &entry{unsafe.Pointer(&v)}
-}
-
-func (e *entry) load() (interface{}, bool) {
-	if e == nil {
-		return nil, false
-	}
-	p := atomic.LoadPointer(&e.p)
-	if p == nil {
-		// Nil means deleted.
-		return nil, false
-	}
-	return *(*interface{})(p), true
-}
-
-func (e *entry) store(v interface{}) {
-	atomic.StorePointer(&e.p, unsafe.Pointer(&v))
-}
-
-func (e *entry) delete() (old *interface{}) {
-	return (*interface{})(atomic.SwapPointer(&e.p, nil))
 }
